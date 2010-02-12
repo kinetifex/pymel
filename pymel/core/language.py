@@ -5,17 +5,20 @@ import sys, os, inspect
 import shelve
 from getpass import getuser as _getuser
 import system
+import bsddb.db as _db
 
 import maya.mel as _mm
 import maya.cmds as _mc
 
 import pymel.util as util
+import pymel.internal as _internal
 import pymel.internal.pmcmds as cmds
 import pymel.internal.factories as _factories
 import pymel.api as _api
 import datatypes
-from pymel.internal import getMayaAppDir
-from pymel.versions import installName
+import pymel.versions as versions
+
+_logger = _internal.getLogger(__name__)
 
 
 #--------------------------
@@ -491,47 +494,79 @@ class OptionVarDict(object):
 class OptionVarShelve( OptionVarDict ):
     """
     OptionVarShelve extends OptionVarDict to support python datatypes.
-    If a MEL supported type is set, it will be set as a standard Maya pref,
-    accessible by MEL. Otherwise, it will be stored as a pickled python-object.
+    If a value type is MEL-supported, it will be stored in Maya userPrefs and accessible by MEL.
+    Otherwise, it will be stored as a pickled python object.
 
-    With errors set to True, behavior will be like standard dict.
-    Otherwise it will behave like OptionVarDict, returning 0 if key does
-    not exist for getitem and pop.
+    With exceptions set to True, behavior will be like standard dictionary.
+    Otherwise it will behave like OptionVarDict, returning 0 if key does not exist.
+
+        >>> from pymel.all import *
+        >>> optionVar['test'] = ['a',10,3.14]
+        >>> optionVar['test']
+        ['a',10,3.14]
+        >>> optionVar.has_key('test')
+        True
+        >>> optionVar.has_key('test',language='mel')
+        False
+        >>> optionVar.has_key('test',language='python')
+        True
+        >>> optionVar['test'] = ['a','b','c']
+        >>> optionVar.has_key('test',language='mel')
+        True
+        >>> optionVar.has_key('test',language='python')
+        False
+        >>> optionVar['test']
+        ['a','b','c']
+
     """
 
-    def __init__(self, exceptions=True, pythonOnly=False ):
-        self._exceptions = exceptions
-        self._pythonOnly = pythonOnly
-        
-        bin_path = os.path.join( getMayaAppDir(), installName(), "prefs", "prefs.bin")        
-        self._shelve = shelve.open(bin_path)
-        
-        self._optionVars = OptionVarDict()
-        
-        _api.MEventMessage.addEventCallback('quitApplication', self._close)
-        
+    __metaclass__ = util.Singleton
 
-    def _close(self, *args):        
+    def __init__(self, exceptions=True ):
+        self._exceptions = exceptions
+
+        self._optionVars = OptionVarDict()
+
+        bin_path = os.path.join( _internal.getMayaAppDir(), versions.installName(), "prefs", "prefs.bin")
+
+        try:
+            self._shelve = shelve.open(bin_path)
+        except _db.DBPermissionsError:
+            _logger.warn( 'Permission Error accessing "prefs.bin". Python-only options vars will not be saved.' )
+            self._shelve = {}
+
+        _id = _api.MEventMessage.addEventCallback( 'quitApplication', self._close )
+
+
+    def _close(self, *args):
         self._shelve.close()
 
 
-    def has_key(self, key):        
-        if not self._pythonOnly:
+    def has_key(self, key, language=''):
+        """Extra language argument for checking where option is stored."""
+
+        if language not in ['','mel','python']:
+            raise TypeError, "language keyword expects 'mel', or 'python'. got '%s'" % language
+
+        if language == '':
             if self._optionVars.has_key(key):
                 return True
-            
-        if self._shelve.has_key(key):
-            return True
-            
+            elif self._shelve.has_key(key):
+                return True
+        elif language == "mel":
+            if self._optionVars.has_key(key):
+                return True
+        elif language == "python":
+            if self._shelve.has_key(key):
+                return True
+
         return False
 
 
-    def __getitem__(self, key):        
-        if not self._pythonOnly:
-            if self._optionVars.has_key(key):
-                return self._optionVars.__getitem__(key)
-        
-        if self._shelve.has_key(key):
+    def __getitem__(self, key):
+        if self._optionVars.has_key(key):
+            return self._optionVars.__getitem__(key)
+        elif self._shelve.has_key(key):
             return self._shelve.__getitem__(key)
         else:
             if self._exceptions:
@@ -540,157 +575,36 @@ class OptionVarShelve( OptionVarDict ):
                 return 0
 
 
-    def __setitem__(self, key, val):        
-        if not self._pythonOnly:
-            # making sure that the optionVar is removed from shelve in the event
-            # that the new value is MEL-supported
-            if self._shelve.has_key(key):
-                self._shelve.pop(key)
-    
-            try:
-                self._optionVars.__setitem__(key,val)
-            except TypeError:
-                # if the option exists but the new value type is not MEL-supported,
-                # be sure it is removed from MEL prefs before adding it to shelve.
-                self._optionVars.pop(key)
-                self._shelve.__setitem__(key,val)
-        else:
+    def __setitem__(self, key, val):
+        # making sure that the optionVar is removed from shelve in the event
+        # that the new value is MEL-supported
+        if self._shelve.has_key(key):
+            self._shelve.pop(key)
+
+        try:
+            self._optionVars.__setitem__(key,val)
+        except TypeError:
+            # if the option exists but the new value type is not MEL-supported,
+            # be sure it is removed from MEL prefs before adding it to shelve.
+            self._optionVars.pop(key)
             self._shelve.__setitem__(key,val)
 
 
-    def keys(self):        
-        if not self._pythonOnly:
-            return self._optionVars.keys() + self._shelve.keys()
-        else:
-            return self._shelve.keys()
+    def keys(self):
+        return self._optionVars.keys() + self._shelve.keys()
 
 
     def pop(self, key):
-        
-        if not self._pythonOnly:
-            if self._optionVars.has_key(key):
-                return self._optionVars.pop(key)
-
-        if self._exceptions:
+        if self._optionVars.has_key(key):
+            return self._optionVars.pop(key)
+        elif self._exceptions:
             return self._shelve.pop(key)
         else:
             return self._shelve.pop(key,0)
 
 
-class OptionVars(object):
-    
-    _melOptionVars = OptionVarDict()
-    _pyOptionVars = OptionVarShelve(pythonOnly=True)
-    _bothOptionVars = OptionVarShelve()
-    
-    _types = ['mel','python','both']
-    
-    def _check_type(self,type):        
-        if type not in self._types:
-            raise TypeError, "type keyword expects 'mel', 'python', or 'both'. got '%s'" % type
-    
-    
-    def has_key(self, key, type='both'):        
-        self._check_type(type)
-        
-        if type == 'mel':
-            return self._melOptionVars.has_key(key)
-        elif type == 'python':
-            return self._pyOptionVars.has_key(key)
-        elif type == 'both':
-            return self._bothOptionVars.has_key(key)
-        
-    
-    def __contains__(self, key):
-        return self.has_key(key)
-
-
-    def get(self, key, default=None, type='both'):        
-        self._check_type(type)
-
-        if type == 'mel':
-            return self._melOptionVars.get(key,default)
-        elif type == 'python':
-            return self._pyOptionVars.get(key,default)
-        elif type == 'both':
-            return self._bothOptionVars.get(key,default)
-        
-
-    def __getitem__(self, key):
-        self._bothOptionVars.__getitem__(key)
-
-
-    def set(self, key, val, type='both'):        
-        self._check_type(type)
-
-        if type == 'mel':
-            return self._melOptionVars.__setitem__(key, val)
-        elif type == 'python':
-            return self._pyOptionVars.__setitem__(key, val)
-        elif type == 'both':
-            return self._bothOptionVars.__setitem__(key, val)
-    
-    
-    def __setitem__(self, key, val):
-        self._bothOptionVars.__setitem__(key,val)
-
-
-    def keys(self, type='both'):        
-        self._check_type(type)
-        
-        if type == 'mel':
-            return self._melOptionVars.keys()
-        elif type == 'python':
-            return self._pyOptionVars.keys()
-        elif type == 'both':
-            return self._bothOptionVars.keys()
-
-
-    def pop(self, key, type='both'):        
-        self._check_type(type)
-
-        if type == 'mel':
-            return self._melOptionVars.pop(key)
-        elif type == 'python':
-            return self._pyOptionVars.pop(key)
-        elif type == 'both':
-            return self._bothOptionVars.pop(key)
-        
-
-    def values(self, type='both'):
-        self._check_type(type)
-        
-        return [self[key] for key in self.keys(type=type)]
-    
-
-    def iterkeys(self, type='both'):
-        self._check_type(type)
-        
-        for key in self.keys(type=type):
-            yield key
-
-    __iter__ = iterkeys
-            
-
-    def itervalues(self, type='both'):
-        self._check_type(type)
-        
-        for key in self.keys(type=type):
-            yield self[key]
-            
-
-    def iteritems(self, type='both'):
-        self._check_type(type)
-        
-        for key in self.keys(type=type):
-            yield key, self[key]
-    
-    
 melOptionVar = OptionVarDict()
-pyOptionVar = OptionVarShelve( pythonOnly=True )
 optionVar = OptionVarShelve()
-
-optionVar2 = OptionVars()
 
 
 class Env(object):
