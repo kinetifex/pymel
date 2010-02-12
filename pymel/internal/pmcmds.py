@@ -4,7 +4,7 @@ This module wraps maya.cmds to accept special pymel arguments.
 There are a number of pymel objects which must be converted to a "mel-friendly"
 representation. For example, in versions prior to 2009, some mel commands (ie, getAttr) which expect
 string arguments will simply reject custom classes, even if they have a valid string representation.
-Another Example is mel's matrix inputs, which expects a flat list of 16 flaots, while pymel's Matrix has a more typical
+Another Example is mel's matrix inputs, which expects a flat list of 16 floats, while pymel's Matrix has a more typical
 4x4 representation.
 
 If you're having compatibility issues with your custom classes when passing them to maya.cmds,
