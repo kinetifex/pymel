@@ -1558,7 +1558,7 @@ class Transform(DagNode):
     @_factories.addApiDocs( _api.MFnTransform, 'setScalePivotTranslation' )
     def setScalePivot(self, point, space='object', balance=True, **kwargs):
         space = self._getSpaceArg(space, kwargs )
-        return self._setScalePivotTranslation(point, space=space, balance=balance)
+        return self._setScalePivot(point, space=space, balance=balance)
 
     @_factories.addApiDocs( _api.MFnTransform, 'scalePivot' )
     def getScalePivot(self, space='object', **kwargs):
